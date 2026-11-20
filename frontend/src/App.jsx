@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { api } from './api'
 import './App.css'
 
 const iconOptions = [
@@ -17,53 +18,6 @@ const accentOptions = [
   { label: 'Lavender Bloom', value: 'linear-gradient(135deg, #cdb4db 0%, #ffc8dd 100%)' },
 ]
 
-const initialProducts = [
-  {
-    id: 1,
-    name: 'Acrylic Studio Set',
-    category: 'Paints',
-    price: 42,
-    stock: 18,
-    rating: 4.9,
-    description: 'High-pigment acrylics for bold textures and layered color work.',
-    symbol: '🎨',
-    tint: accentOptions[0].value,
-  },
-  {
-    id: 2,
-    name: 'Watercolor Essentials',
-    category: 'Paints',
-    price: 36,
-    stock: 12,
-    rating: 4.7,
-    description: 'Pocket-friendly watercolor starter kit with rich, blendable pigments.',
-    symbol: '🎨',
-    tint: accentOptions[1].value,
-  },
-  {
-    id: 3,
-    name: 'Canvas Pack Pro',
-    category: 'Canvas',
-    price: 58,
-    stock: 9,
-    rating: 4.8,
-    description: 'Pre-gessoed canvases for gallery-ready paintings and practice work.',
-    symbol: '📄',
-    tint: accentOptions[2].value,
-  },
-  {
-    id: 4,
-    name: 'Brush Master Kit',
-    category: 'Tools',
-    price: 28,
-    stock: 21,
-    rating: 4.6,
-    description: 'A balanced set of detail and wash brushes for smooth, precise strokes.',
-    symbol: '🖌️',
-    tint: accentOptions[3].value,
-  },
-]
-
 const defaultForm = {
   name: '',
   category: 'Paints',
@@ -75,45 +29,104 @@ const defaultForm = {
 }
 
 const navTabs = [
-  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'shop', label: 'Shop Storefront' },
   { id: 'products', label: 'Products' },
   { id: 'inventory', label: 'Inventory' },
   { id: 'customer orders', label: 'Customer Orders' },
 ]
 
-const initialOrders = [
-  {
-    id: 1,
-    customerName: 'Alicia M.',
-    items: [
-      { id: 1, name: 'Acrylic Studio Set', qty: 1, price: 42 },
-      { id: 3, name: 'Canvas Pack Pro', qty: 1, price: 58 },
-    ],
-    total: 100,
-    status: 'Ready to ship',
-  },
-  {
-    id: 2,
-    customerName: 'Theo R.',
-    items: [{ id: 4, name: 'Brush Master Kit', qty: 2, price: 28 }],
-    total: 56,
-    status: 'Processing',
-  },
-]
-
 function App() {
-  const [products, setProducts] = useState(initialProducts)
-  const [selectedCategory, setSelectedCategory] = useState('All')
-  const [cart, setCart] = useState([
-    { id: 1, qty: 1 },
-    { id: 3, qty: 2 },
+  const [products, setProducts] = useState([
+    { id: 'demo-1', variantId: null, name: 'Acrylic Studio Set', category: 'Paints', categoryId: 'demo-paints', price: 42, stock: 18, rating: 4.9, description: 'High-pigment acrylics for bold textures and layered color work.', symbol: '🎨', tint: accentOptions[0].value },
+    { id: 'demo-2', variantId: null, name: 'Watercolor Essentials', category: 'Paints', categoryId: 'demo-paints', price: 36, stock: 12, rating: 4.7, description: 'Pocket-friendly watercolor starter kit with rich, blendable pigments.', symbol: '🎨', tint: accentOptions[1].value },
+    { id: 'demo-3', variantId: null, name: 'Canvas Pack Pro', category: 'Canvas', categoryId: 'demo-canvas', price: 58, stock: 9, rating: 4.8, description: 'Pre-gessoed canvases for gallery-ready paintings and practice work.', symbol: '📄', tint: accentOptions[2].value },
+    { id: 'demo-4', variantId: null, name: 'Brush Master Kit', category: 'Tools', categoryId: 'demo-tools', price: 28, stock: 21, rating: 4.6, description: 'A balanced set of detail and wash brushes for smooth, precise strokes.', symbol: '🖌️', tint: accentOptions[3].value },
   ])
+  const [categories, setCategories] = useState([
+    { categoryId: 'demo-paints', name: 'Paints' },
+    { categoryId: 'demo-canvas', name: 'Canvas' },
+    { categoryId: 'demo-tools', name: 'Tools' },
+  ])
+  const [session, setSession] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pintura_session')) } catch { return null }
+  })
+  const [authMode, setAuthMode] = useState('login')
+  const [authData, setAuthData] = useState({ name: '', email: '', password: '' })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState('All')
+  const [cart, setCart] = useState([])
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [checkoutData, setCheckoutData] = useState({ name: '', email: '', contact: '', addressLine1: '', city: '', country: 'Philippines' })
   const [formData, setFormData] = useState(defaultForm)
   const [editingId, setEditingId] = useState(null)
-  const [activeTab, setActiveTab] = useState('dashboard')
-  const [orders, setOrders] = useState(initialOrders)
+  const [activeTab, setActiveTab] = useState('shop')
+  const [orders, setOrders] = useState([
+    { id: 'demo-order-1', customerName: 'Alicia M.', items: [{ id: 'demo-1', qty: 1 }, { id: 'demo-3', qty: 1 }], total: 100, status: 'processing' },
+    { id: 'demo-order-2', customerName: 'Theo R.', items: [{ id: 'demo-4', qty: 2 }], total: 56, status: 'pending' },
+  ])
 
-  const categories = ['All', ...new Set(products.map((product) => product.category))]
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError('')
+      const [categoryRows, productRows, variantRows, orderRows] = await Promise.all([
+        api.categories.list(),
+        api.products.list(),
+        api.variants.list(),
+        api.orders.list(session?.user.role === 'customer' ? session.user.customerId : undefined),
+      ])
+
+      setCategories(categoryRows)
+
+      const categoryById = Object.fromEntries(categoryRows.map((category) => [category.categoryId, category]))
+      const variantsByProduct = Object.fromEntries(productRows.map((product) => [
+        product.productId,
+        variantRows.find((variant) => variant.productId === product.productId && variant.active),
+      ]))
+
+      setProducts(productRows.map((product) => {
+        const variant = variantsByProduct[product.productId]
+        return {
+          id: product.productId,
+          variantId: variant?.variantId,
+          name: product.name,
+          category: categoryById[product.categoryId]?.name || 'Uncategorized',
+          categoryId: product.categoryId,
+          price: variant?.price || 0,
+          stock: variant?.stockOnHand || 0,
+          rating: 4.8,
+          description: product.description || '',
+          symbol: '🎨',
+          tint: accentOptions[0].value,
+        }
+      }))
+
+      setOrders(orderRows.map((order) => ({
+        id: order.orderId,
+        customerName: order.customer?.customerName || order.customerId,
+        items: (order.items || []).map((item) => ({
+          id: item.variantId,
+          name: item.productName,
+          qty: item.quantity,
+          price: item.unitPrice,
+        })),
+        total: order.subtotal,
+        status: order.status,
+      })))
+    } catch (loadError) {
+      setError(loadError.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [session])
+
+  useEffect(() => {
+    const timer = window.setTimeout(loadData, 0)
+    return () => window.clearTimeout(timer)
+  }, [loadData])
+
+  const categoryNames = ['All', ...new Set(products.map((product) => product.category))]
 
   const filteredProducts =
     selectedCategory === 'All'
@@ -178,40 +191,64 @@ function App() {
     )
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
 
-    const productData = {
-      ...formData,
-      name: formData.name.trim(),
-      description: formData.description.trim(),
-      price: Number(formData.price),
-      stock: Number(formData.stock),
-      rating: 4.8,
-    }
+    const name = formData.name.trim()
+    const description = formData.description.trim()
+    const price = Number(formData.price)
+    const stock = Number(formData.stock)
 
-    if (!productData.name || !productData.description || !productData.price || !productData.stock) {
+    if (!name || !description || price < 0 || stock < 0) {
+      setError('Name, description, price, and stock are required.')
       return
     }
 
-    if (editingId) {
-      setProducts((previous) =>
-        previous.map((product) =>
-          product.id === editingId ? { ...product, ...productData, id: editingId } : product,
-        ),
-      )
-    } else {
-      const newProduct = {
-        ...productData,
-        id: Date.now(),
-        symbol: formData.symbol || '🎨',
-        tint: formData.tint || 'linear-gradient(135deg, #ff9a9e 0%, #fad0c4 100%)',
+    try {
+      setError('')
+      let category = categories.find((item) => item.name === formData.category)
+      if (!category) {
+        category = await api.categories.create({ name: formData.category })
       }
 
-      setProducts((previous) => [newProduct, ...previous])
-    }
+      if (editingId) {
+        const product = products.find((item) => item.id === editingId)
+        await api.products.update(editingId, { name, description, categoryId: category.categoryId })
+        if (product?.variantId) {
+          await api.variants.update(product.variantId, { price, active: true })
+          if (stock !== product.stock) {
+            await api.movements.adjust({
+              variantId: product.variantId,
+              type: 'adjustment',
+              quantityDelta: stock - product.stock,
+              reason: 'Frontend inventory adjustment',
+            })
+          }
+        }
+      } else {
+        const product = await api.products.create({ name, description, categoryId: category.categoryId })
+        await api.variants.create({
+          productId: product.productId,
+          sku: `${name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20)}-${Date.now().toString().slice(-6)}`,
+          price,
+          active: true,
+        })
+        const createdVariants = await api.variants.list(product.productId)
+        if (stock > 0 && createdVariants[0]) {
+          await api.movements.adjust({
+            variantId: createdVariants[0].variantId,
+            type: 'receipt',
+            quantityDelta: stock,
+            reason: 'Initial stock',
+          })
+        }
+      }
 
-    resetForm()
+      resetForm()
+      await loadData()
+    } catch (submitError) {
+      setError(submitError.message)
+    }
   }
 
   const handleEdit = (product) => {
@@ -227,58 +264,148 @@ function App() {
     })
   }
 
-  const handleDelete = (productId) => {
-    setProducts((previous) => previous.filter((product) => product.id !== productId))
-    setCart((previous) => previous.filter((item) => item.id !== productId))
+  const handleDelete = async (productId) => {
+    const product = products.find((item) => item.id === productId)
+    if (!window.confirm(`Delete ${product?.name || 'this product'}?`)) return
 
-    if (editingId === productId) {
-      resetForm()
+    try {
+      setError('')
+      await api.products.delete(productId)
+      setCart((previous) => previous.filter((item) => item.id !== productId))
+      if (editingId === productId) resetForm()
+      await loadData()
+    } catch (deleteError) {
+      setError(deleteError.message)
     }
   }
 
-  const handleCheckout = () => {
+  const handleCheckout = async (event) => {
+    event?.preventDefault()
     if (cartItems.length === 0) {
-      window.alert('Your cart is empty.')
+      setError('Your cart is empty.')
+      return
+    }
+    if (!checkoutData.name.trim() || !checkoutData.addressLine1.trim() || !checkoutData.city.trim()) {
+      setError('Name, address, and city are required.')
       return
     }
 
-    const customerName = window.prompt('Please enter your name for this order:')
-
-    if (!customerName || !customerName.trim()) {
-      return
+    try {
+      setError('')
+      const customerId = session.user.customerId
+      if (!customerId) throw new Error('This account is not linked to a customer profile')
+      await api.customers.update(customerId, {
+        customerName: checkoutData.name.trim(),
+        ...(checkoutData.email ? { email: checkoutData.email.trim() } : {}),
+        ...(checkoutData.contact ? { contact: checkoutData.contact.trim() } : {}),
+      })
+      const address = await api.addresses.create(customerId, {
+        label: 'Delivery address',
+        addressLine1: checkoutData.addressLine1.trim(),
+        city: checkoutData.city.trim(),
+        country: checkoutData.country.trim(),
+      })
+      await api.orders.create({
+        customerId: customerId,
+        addressId: address.addressId,
+        items: cartItems.map((item) => ({ variantId: item.variantId, quantity: item.qty })),
+      })
+      setCart([])
+      setCheckoutOpen(false)
+      setCheckoutData({ name: '', email: '', contact: '', addressLine1: '', city: '', country: 'Philippines' })
+      await loadData()
+    } catch (checkoutError) {
+      setError(checkoutError.message)
     }
+  }
 
-    const newOrder = {
-      id: Date.now(),
-      customerName: customerName.trim(),
-      items: cartItems.map((item) => ({
-        id: item.id,
-        name: item.name,
-        qty: item.qty,
-        price: item.price,
-      })),
-      total: total,
-      status: 'Processing',
+  const handleOrderStatusChange = async (orderId, nextStatus) => {
+    try {
+      setError('')
+      await api.orders.updateStatus(orderId, nextStatus)
+      await loadData()
+    } catch (statusError) {
+      setError(statusError.message)
     }
+  }
 
-    setOrders((previous) => [newOrder, ...previous])
+  const handleOrderDelete = async (orderId) => {
+    if (!window.confirm('Delete this order?')) return
+    try {
+      setError('')
+      await api.orders.delete(orderId)
+      await loadData()
+    } catch (deleteError) {
+      setError(deleteError.message)
+    }
+  }
+
+  const handleAuth = async (event) => {
+    event.preventDefault()
+    try {
+      setError('')
+      setLoading(true)
+      const result = authMode === 'register'
+        ? await api.auth.register({ name: authData.name, email: authData.email, password: authData.password, role: 'customer' })
+        : await api.auth.login({ email: authData.email, password: authData.password })
+      const nextSession = { token: result.token, user: result.user }
+      localStorage.setItem('pintura_session', JSON.stringify(nextSession))
+      setSession(nextSession)
+      setActiveTab(result.user.role === 'admin' ? 'dashboard' : 'shop')
+      setAuthData({ name: '', email: '', password: '' })
+      await loadData()
+    } catch (authError) {
+      setError(authError.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      if (session?.token) await api.auth.logout(session.token)
+    } catch {
+      // Clear the local session even if the backend request fails.
+    }
+    localStorage.removeItem('pintura_session')
+    setSession(null)
     setCart([])
   }
 
-  const handleOrderStatusChange = (orderId, nextStatus) => {
-    setOrders((previous) =>
-      previous.map((order) =>
-        order.id === orderId ? { ...order, status: nextStatus } : order,
-      ),
+  if (!session) {
+    return (
+      <main className="auth-page">
+        <section className="auth-card">
+          <div className="brand-mark auth-mark">P</div>
+          <p className="eyebrow">Pintura De Mercado</p>
+          <h2>{authMode === 'login' ? 'Welcome back' : 'Create customer account'}</h2>
+          {error && <div className="api-error" role="alert">{error}</div>}
+          <form className="auth-form" onSubmit={handleAuth}>
+            {authMode === 'register' && (
+              <label>Full name<input value={authData.name} onChange={(event) => setAuthData((previous) => ({ ...previous, name: event.target.value }))} required /></label>
+            )}
+            <label>Email<input type="email" value={authData.email} onChange={(event) => setAuthData((previous) => ({ ...previous, email: event.target.value }))} required /></label>
+            <label>Password<input type="password" value={authData.password} onChange={(event) => setAuthData((previous) => ({ ...previous, password: event.target.value }))} required minLength="6" /></label>
+            <button type="submit" className="primary-button">{authMode === 'login' ? 'Log in' : 'Create account'}</button>
+          </form>
+          <button type="button" className="auth-switch" onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setError('') }}>
+            {authMode === 'login' ? 'New customer? Create an account' : 'Already have an account? Log in'}
+          </button>
+          {authMode === 'login' && <div className="demo-credentials"><strong>Demo accounts</strong><span>Customer: customer@pintura.com / customer123</span><span>Admin: admin@pintura.com / admin123</span></div>}
+        </section>
+      </main>
     )
   }
 
-  const handleOrderDelete = (orderId) => {
-    setOrders((previous) => previous.filter((order) => order.id !== orderId))
-  }
+  const visibleTabs = session.user.role === 'admin'
+    ? navTabs.filter((tab) => tab.id !== 'shop')
+    : navTabs.filter((tab) => tab.id === 'shop' || tab.id === 'customer orders')
 
   return (
     <div className="app-shell admin-layout">
+      {error && <div className="api-error" role="alert">{error}</div>}
+      {loading && <div className="api-loading">Loading inventory...</div>}
+
       <aside className="left-sidebar">
         <div className="brand-block sidebar-brand">
           <div className="brand-mark">P</div>
@@ -289,7 +416,7 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="Sidebar navigation">
-          {navTabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
@@ -300,21 +427,26 @@ function App() {
             </button>
           ))}
         </nav>
+        <div className="session-block">
+          <strong>{session.user.name}</strong>
+          <span>{session.user.role === 'admin' ? 'Administrator' : 'Customer'}</span>
+          <button type="button" className="ghost-button" onClick={handleLogout}>Log out</button>
+        </div>
       </aside>
 
       <div className="workspace-panel">
         <header className="topbar">
           <div>
             <p className="eyebrow">Store overview</p>
-            <h2>{activeTab === 'dashboard' ? 'Dashboard' : activeTab === 'products' ? 'Products' : activeTab === 'inventory' ? 'Inventory' : 'Customer Orders'}</h2>
+            <h2>{activeTab === 'shop' ? 'Shop Storefront' : activeTab === 'products' ? 'Products' : activeTab === 'inventory' ? 'Inventory' : 'Customer Orders'}</h2>
           </div>
 
-          <button type="button" className="primary-button cart-button" onClick={handleCheckout}>
+          <button type="button" className="primary-button cart-button" onClick={() => activeTab === 'shop' ? setCheckoutOpen(true) : setActiveTab('shop')}>
             Cart ({cart.length})
           </button>
         </header>
 
-        {activeTab === 'dashboard' && (
+        {activeTab === 'shop' && (
           <main className="main-layout">
             <section className="storefront-panel" id="shop">
               <div className="hero-banner">
@@ -354,7 +486,7 @@ function App() {
 
               <div className="shop-toolbar">
                 <div className="category-pills" aria-label="Filter products by category">
-                  {categories.map((category) => (
+                  {categoryNames.map((category) => (
                     <button
                       key={category}
                       type="button"
@@ -668,24 +800,50 @@ function App() {
                     </div>
 
                     <div className="order-actions">
-                      <select
-                        value={order.status}
-                        onChange={(event) => handleOrderStatusChange(order.id, event.target.value)}
-                      >
-                        <option value="Processing">Processing</option>
-                        <option value="Ready to ship">Ready to ship</option>
-                        <option value="Shipped">Shipped</option>
-                      </select>
-
-                      <button type="button" className="danger-button small-button" onClick={() => handleOrderDelete(order.id)}>
-                        Delete
-                      </button>
+                      {session.user.role === 'admin' ? (
+                        <>
+                          <select
+                            value={order.status}
+                            onChange={(event) => handleOrderStatusChange(order.id, event.target.value)}
+                          >
+                            <option value="pending">Pending</option>
+                            <option value="processing">Processing</option>
+                            <option value="shipped">Shipped</option>
+                            <option value="completed">Completed</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                          <button type="button" className="danger-button small-button" onClick={() => handleOrderDelete(order.id)}>Delete</button>
+                        </>
+                      ) : (
+                        <span className="order-status">{order.status}</span>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             </div>
           </main>
+        )}
+
+        {checkoutOpen && (
+          <div className="checkout-overlay" role="dialog" aria-modal="true" aria-label="Checkout">
+            <form className="checkout-modal" onSubmit={handleCheckout}>
+              <div className="panel-header">
+                <h3>Checkout</h3>
+                <button type="button" className="ghost-button" onClick={() => setCheckoutOpen(false)}>Close</button>
+              </div>
+              <div className="checkout-fields">
+                <label>Full name<input value={checkoutData.name} onChange={(event) => setCheckoutData((previous) => ({ ...previous, name: event.target.value }))} required /></label>
+                <label>Email<input type="email" value={checkoutData.email} onChange={(event) => setCheckoutData((previous) => ({ ...previous, email: event.target.value }))} /></label>
+                <label>Contact<input value={checkoutData.contact} onChange={(event) => setCheckoutData((previous) => ({ ...previous, contact: event.target.value }))} /></label>
+                <label>Address<input value={checkoutData.addressLine1} onChange={(event) => setCheckoutData((previous) => ({ ...previous, addressLine1: event.target.value }))} required /></label>
+                <label>City<input value={checkoutData.city} onChange={(event) => setCheckoutData((previous) => ({ ...previous, city: event.target.value }))} required /></label>
+                <label>Country<input value={checkoutData.country} onChange={(event) => setCheckoutData((previous) => ({ ...previous, country: event.target.value }))} required /></label>
+              </div>
+              <div className="checkout-total"><span>Total</span><strong>${total}</strong></div>
+              <button type="submit" className="primary-button">Place order</button>
+            </form>
+          </div>
         )}
       </div>
     </div>

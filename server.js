@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const {
+  User,
   Customer,
   Address,
   Category,
@@ -29,6 +31,28 @@ class HttpError extends Error {
 
 function fail(status, message) {
   throw new HttpError(status, message);
+}
+
+function hashPassword(password, salt) {
+  return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+}
+
+function createPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { passwordSalt: salt, passwordHash: hashPassword(password, salt) };
+}
+
+async function authenticatedUser(request) {
+  const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) return null;
+  return User.findOne({ sessionToken: token }).select('-passwordHash -passwordSalt -sessionToken');
+}
+
+async function requireRole(request, role) {
+  const user = await authenticatedUser(request);
+  if (!user) fail(401, 'Authentication required');
+  if (role && user.role !== role) fail(403, 'You do not have permission for this action');
+  return user;
 }
 
 function newId() {
@@ -138,6 +162,13 @@ async function applyStockChange({ variantId, delta, type, reason, orderId }) {
 }
 
 app.use(express.json({ limit: '1mb' }));
+app.use((request, response, next) => {
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  if (request.method === 'OPTIONS') return response.sendStatus(204);
+  next();
+});
 
 app.get('/health', (request, response) => {
   response.json({ status: mongoose.connection.readyState === 1 ? 'ok' : 'starting' });
@@ -365,7 +396,13 @@ app.put('/api/products/:productId', async (request, response) => {
 
 app.delete('/api/products/:productId', async (request, response) => {
   const { productId } = request.params;
-  if (await ProductVariant.exists({ productId })) fail(409, 'Product has variants and cannot be deleted');
+  const variants = await ProductVariant.find({ productId }).select('variantId');
+  for (const variant of variants) {
+    if (await OrderItem.exists({ variantId: variant.variantId }) || await InventoryMovement.exists({ variantId: variant.variantId })) {
+      fail(409, 'Product has variants with order or inventory history and cannot be deleted');
+    }
+  }
+  await ProductVariant.deleteMany({ productId });
   const result = await Product.deleteOne({ productId });
   if (!result.deletedCount) fail(404, 'Product not found');
   response.status(204).end();
@@ -463,7 +500,7 @@ app.get('/api/orders', async (request, response) => {
     if (!orderStatuses.includes(String(request.query.status))) fail(400, 'Invalid order status');
     filter.status = String(request.query.status);
   }
-  response.json(await Order.find(filter).sort({ createdAt: -1 }).limit(200));
+  response.json(await Order.find(filter).sort({ createdAt: -1 }).limit(200).populate('customer').populate('items'));
 });
 
 app.post('/api/orders', async (request, response) => {
@@ -635,6 +672,68 @@ app.patch('/api/orders/:orderId', async (request, response) => {
   response.json(updated);
 });
 
+app.delete('/api/orders/:orderId', async (request, response) => {
+  const order = await getById(Order, 'orderId', request.params.orderId, 'Order');
+  if (!['completed', 'cancelled'].includes(order.status)) {
+    fail(409, 'Only completed or cancelled orders can be deleted');
+  }
+  await Promise.all([
+    OrderItem.deleteMany({ orderId: order.orderId }),
+    InventoryMovement.deleteMany({ orderId: order.orderId }),
+  ]);
+  await Order.deleteOne({ orderId: order.orderId });
+  response.status(204).end();
+});
+
+app.post('/api/auth/register', async (request, response) => {
+  const body = bodyOf(request);
+  allowFields(body, ['name', 'email', 'password', 'role']);
+  const name = text(body, 'name', { required: true });
+  const email = text(body, 'email', { required: true }).toLowerCase();
+  const password = text(body, 'password', { required: true });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'email must be valid');
+  if (password.length < 6) fail(400, 'password must be at least 6 characters');
+
+  const role = 'customer';
+  const customer = role === 'customer'
+    ? await Customer.create({ customerId: newId(), customerName: name, email })
+    : null;
+  const credentials = createPassword(password);
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const user = await User.create({
+    userId: newId(), name, email, role,
+    ...(customer ? { customerId: customer.customerId } : {}),
+    ...credentials,
+    sessionToken,
+  });
+  response.status(201).json({ token: sessionToken, user: { userId: user.userId, name: user.name, email: user.email, role: user.role, customerId: user.customerId } });
+});
+
+app.post('/api/auth/login', async (request, response) => {
+  const body = bodyOf(request);
+  allowFields(body, ['email', 'password']);
+  const email = text(body, 'email', { required: true }).toLowerCase();
+  const password = text(body, 'password', { required: true });
+  const user = await User.findOne({ email });
+  if (!user || hashPassword(password, user.passwordSalt) !== user.passwordHash) fail(401, 'Invalid email or password');
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  user.sessionToken = sessionToken;
+  await user.save();
+  response.json({ token: sessionToken, user: { userId: user.userId, name: user.name, email: user.email, role: user.role, customerId: user.customerId } });
+});
+
+app.get('/api/auth/me', async (request, response) => {
+  const user = await authenticatedUser(request);
+  if (!user) fail(401, 'Authentication required');
+  response.json({ user });
+});
+
+app.post('/api/auth/logout', async (request, response) => {
+  const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  await User.updateOne({ sessionToken: token }, { $set: { sessionToken: null } });
+  response.status(204).end();
+});
+
 app.use((request, response) => {
   response.status(404).json({ error: 'Route not found' });
 });
@@ -656,8 +755,102 @@ app.use((error, request, response, next) => {
   response.status(500).json({ error: 'Internal server error' });
 });
 
+async function seedDatabase() {
+  if (!await User.exists({ email: 'admin@pintura.com' })) {
+    const adminPassword = createPassword('admin123');
+    await User.create({ userId: newId(), name: 'Pintura Admin', email: 'admin@pintura.com', role: 'admin', ...adminPassword });
+  }
+
+  if (!await User.exists({ email: 'customer@pintura.com' })) {
+    let customer = await Customer.findOne({ email: 'alicia@example.com' });
+    if (!customer) customer = await Customer.create({ customerId: newId(), customerName: 'Alicia M.', email: 'alicia@example.com', contact: '555-0101' });
+    const customerPassword = createPassword('customer123');
+    await User.create({ userId: newId(), name: 'Alicia M.', email: 'customer@pintura.com', role: 'customer', customerId: customer.customerId, ...customerPassword });
+  }
+
+  await seedDemoOrders();
+
+  if (await Order.countDocuments()) return;
+
+  const categoryRows = await Category.insertMany([
+    { categoryId: newId(), name: 'Paints', slug: 'paints' },
+    { categoryId: newId(), name: 'Canvas', slug: 'canvas' },
+    { categoryId: newId(), name: 'Tools', slug: 'tools' },
+  ]);
+
+  const paints = categoryRows.find((row) => row.slug === 'paints');
+  const canvas = categoryRows.find((row) => row.slug === 'canvas');
+  const tools = categoryRows.find((row) => row.slug === 'tools');
+
+  const products = await Product.insertMany([
+    { productId: newId(), name: 'Acrylic Studio Set', description: 'High-pigment acrylics for bold textures and layered color work.', brand: 'Pintura', categoryId: paints.categoryId },
+    { productId: newId(), name: 'Watercolor Essentials', description: 'Pocket-friendly watercolor starter kit with rich, blendable pigments.', brand: 'Pintura', categoryId: paints.categoryId },
+    { productId: newId(), name: 'Canvas Pack Pro', description: 'Pre-gessoed canvases for gallery-ready paintings and practice work.', brand: 'Studio Line', categoryId: canvas.categoryId },
+    { productId: newId(), name: 'Brush Master Kit', description: 'A balanced set of detail and wash brushes for smooth, precise strokes.', brand: 'CraftWorks', categoryId: tools.categoryId },
+  ]);
+
+  const variantSpecs = [
+    [products[0], 'ACR-STUDIO-12', 42, 18],
+    [products[1], 'WAT-ESSENTIAL-24', 36, 12],
+    [products[2], 'CAN-PACK-PRO-3', 58, 9],
+    [products[3], 'BRUSH-MASTER-8', 28, 21],
+  ];
+
+  for (const [product, sku, price, stockOnHand] of variantSpecs) {
+    const variantId = newId();
+    await ProductVariant.create({ variantId, productId: product.productId, sku, price, stockOnHand, active: true, color: 'Assorted', finish: 'Mixed' });
+    await InventoryMovement.create({ movementId: newId(), variantId, type: 'receipt', quantityDelta: stockOnHand, reason: 'Opening demo stock' });
+  }
+
+  console.log(`Seeded demo catalog: ${products.length} products`);
+}
+
+async function seedDemoOrders() {
+  const existingCount = await Order.countDocuments();
+  const missingCount = 3 - existingCount;
+  if (missingCount <= 0) return;
+
+  const customer = await Customer.findOne({ email: 'alicia@example.com' });
+  if (!customer) return;
+
+  let address = await Address.findOne({ customerId: customer.customerId });
+  if (!address) {
+    address = await Address.create({ addressId: newId(), customerId: customer.customerId, label: 'Home', addressLine1: '123 Gallery Street', city: 'Manila', country: 'Philippines' });
+  }
+
+  const variants = await ProductVariant.find({}).sort({ sku: 1 }).limit(3);
+  if (variants.length < 3) return;
+
+  const statuses = ['pending', 'processing', 'completed'];
+  for (let index = 0; index < missingCount; index += 1) {
+    const variant = variants[index];
+    const product = await Product.findOne({ productId: variant.productId });
+    const quantity = index + 1;
+    const orderId = newId();
+    const subtotal = Number((variant.price * quantity).toFixed(2));
+
+    await Order.create({
+      orderId, customerId: customer.customerId, addressId: address.addressId,
+      shippingAddress: { label: address.label, addressLine1: address.addressLine1, addressLine2: address.addressLine2, city: address.city, region: address.region, postalCode: address.postalCode, country: address.country },
+      status: statuses[index], subtotal,
+    });
+
+    await OrderItem.create({
+      orderItemId: newId(), orderId, variantId: variant.variantId,
+      productId: variant.productId, productName: product?.name || 'Paint Supply',
+      sku: variant.sku, variantDescription: [variant.color, variant.finish].filter(Boolean).join(', '),
+      quantity, unitPrice: variant.price, lineTotal: subtotal,
+    });
+
+    await applyStockChange({ variantId: variant.variantId, delta: -quantity, type: 'sale', reason: `Seeded demo order ${orderId}`, orderId });
+  }
+
+  console.log('Seeded 3 demo customer orders');
+}
+
 async function start() {
   await mongoose.connect(mongoUri, { dbName: databaseName });
+  await seedDatabase();
   const server = app.listen(port, () => {
     console.log(`Paint shop inventory API listening on http://localhost:${port}`);
     console.log(`MongoDB database: ${databaseName}`);

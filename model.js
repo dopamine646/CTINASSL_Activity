@@ -167,6 +167,17 @@ inventoryMovementSchema.virtual('order', {
   justOne: true,
 });
 
+const userSchema = new Schema({
+  userId: { type: String, required: true, unique: true },
+  name: { type: String, required: true, trim: true },
+  email: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  passwordSalt: { type: String, required: true },
+  passwordHash: { type: String, required: true },
+  role: { type: String, required: true, enum: ['customer', 'admin'], default: 'customer' },
+  customerId: { type: String, default: null, ref: 'Customer' },
+  sessionToken: { type: String, default: null },
+}, { collection: 'users', ...timestamps });
+
 for (const schema of [
   customerSchema,
   addressSchema,
@@ -176,6 +187,7 @@ for (const schema of [
   orderSchema,
   orderItemSchema,
   inventoryMovementSchema,
+  userSchema,
 ]) {
   schema.set('toJSON', { virtuals: true });
   schema.set('toObject', { virtuals: true });
@@ -190,4 +202,5 @@ module.exports = {
   Order: mongoose.model('Order', orderSchema),
   OrderItem: mongoose.model('OrderItem', orderItemSchema),
   InventoryMovement: mongoose.model('InventoryMovement', inventoryMovementSchema),
+  User: mongoose.model('User', userSchema),
 };
